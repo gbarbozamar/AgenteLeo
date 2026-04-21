@@ -51,6 +51,44 @@ export function createQrRouter({ waClient, logger, bearerToken }) {
     logger.info('[qr-endpoint] waClient ready — device paired');
   });
 
+  // --- Cookie parser (tiny, zero-dep) ---------------------------------------
+  const parseCookie = (req) => {
+    const raw = req.headers.cookie || '';
+    const out = {};
+    raw.split(';').forEach((p) => {
+      const idx = p.indexOf('=');
+      if (idx < 0) return;
+      const k = p.slice(0, idx).trim();
+      const v = p.slice(idx + 1).trim();
+      if (k) out[k] = decodeURIComponent(v);
+    });
+    return out;
+  };
+
+  // --- GET /login?token=X ---------------------------------------------------
+  // Sets HttpOnly cookie with the token and redirects to /qr (no query param
+  // in URL — survives extensions that strip tracking params).
+  router.get('/login', (req, res) => {
+    const token = typeof req.query.token === 'string' ? req.query.token : '';
+    if (!bearerToken) {
+      return res.redirect('/qr');
+    }
+    if (token !== bearerToken) {
+      return res.status(401).send(
+        '<html><body style="font-family:monospace;background:#0e0e0e;color:#e66;padding:40px"><h2>Unauthorized</h2><p>Invalid or missing token.</p></body></html>',
+      );
+    }
+    // Set cookie for this path — 1h lifetime
+    res.cookie('oc_token', token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+      maxAge: 60 * 60 * 1000,
+      path: '/',
+    });
+    res.redirect('/qr');
+  });
+
   // --- Auth middleware ------------------------------------------------------
   const authMiddleware = (req, res, next) => {
     if (!bearerToken) return next();
@@ -60,12 +98,25 @@ export function createQrRouter({ waClient, logger, bearerToken }) {
       ? header.slice('Bearer '.length).trim()
       : null;
     const queryToken = typeof req.query.token === 'string' ? req.query.token : null;
+    const cookies = parseCookie(req);
+    const cookieToken = cookies.oc_token || null;
 
-    if (headerToken === bearerToken || queryToken === bearerToken) {
+    if (
+      headerToken === bearerToken ||
+      queryToken === bearerToken ||
+      cookieToken === bearerToken
+    ) {
       return next();
     }
 
     logger.warn('[qr-endpoint] unauthorized request to %s', req.originalUrl);
+    // If this is a browser hitting /qr with no auth, redirect to login page
+    const wantsHtml = (req.get('accept') || '').includes('text/html');
+    if (wantsHtml && req.path === '/qr') {
+      return res.status(401).send(
+        '<html><body style="font-family:monospace;background:#0e0e0e;color:#e6e6e6;padding:40px;text-align:center"><h2>OpenClaw — Unauthorized</h2><p>Use <code>/login?token=YOUR_TOKEN</code> to authenticate.</p></body></html>',
+      );
+    }
     res.status(401).json({ error: 'unauthorized' });
   };
 
