@@ -244,8 +244,9 @@ export function createQrRouter({ waClient, logger, bearerToken }) {
     var waitingEl      = document.getElementById('waiting');
     var instructionsEl = document.getElementById('instructions');
 
-    var prev = { ready: null, hasQr: null, pairedAt: null };
+    var prev = { ready: null, hasQr: null, pairedAt: null, qrAgeMs: null };
     var timer = null;
+    var lastImageReload = 0;
 
     function fmtTime(ms) {
       if (!ms) return '';
@@ -271,10 +272,19 @@ export function createQrRouter({ waClient, logger, bearerToken }) {
         pairedTimeEl.textContent = '(' + fmtTime(status.pairedAt) + ')';
       }
 
-      // Reload QR image when it changed or we're newly showing it
-      var qrChanged = (prev.hasQr !== hasQr) || (prev.ready !== ready);
-      if (!ready && hasQr && qrChanged) {
-        qrImgEl.src = IMAGE_URL + (IMAGE_URL.indexOf('?') === -1 ? '?' : '&') + 't=' + Date.now();
+      // Reload QR image when:
+      //  - we transition to having a QR for the first time, OR
+      //  - the QR age reset (Baileys rotated the QR — new one available)
+      //  - fallback: 6s since last reload while QR still visible (safety net)
+      var now = Date.now();
+      var firstShow = (prev.hasQr !== hasQr) || (prev.ready !== ready);
+      var qrAge = typeof status.qrAgeMs === 'number' ? status.qrAgeMs : null;
+      var rotated = prev.qrAgeMs !== null && qrAge !== null && qrAge < prev.qrAgeMs;
+      var staleReload = (now - lastImageReload) > 6000;
+
+      if (!ready && hasQr && (firstShow || rotated || staleReload)) {
+        qrImgEl.src = IMAGE_URL + (IMAGE_URL.indexOf('?') === -1 ? '?' : '&') + 't=' + now;
+        lastImageReload = now;
       }
 
       if (ready && timer) {
@@ -282,7 +292,7 @@ export function createQrRouter({ waClient, logger, bearerToken }) {
         timer = null;
       }
 
-      prev = { ready: ready, hasQr: hasQr, pairedAt: status.pairedAt };
+      prev = { ready: ready, hasQr: hasQr, pairedAt: status.pairedAt, qrAgeMs: qrAge };
     }
 
     function poll() {
