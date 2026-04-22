@@ -123,34 +123,55 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
     );
 
     let mediaPath = null;
-    if (
-      process.env.AUTO_DOWNLOAD_MEDIA === 'true' &&
+    let mediaBuffer = null;
+    let mediaMime = null;
+
+    // Download media when:
+    //   - AUTO_DOWNLOAD_MEDIA=true  → save to disk + optionally include in webhook
+    //   - WEBHOOK_INCLUDE_AUDIO=true → inline base64 for voice/audio in webhook
+    //
+    // For voice/audio we default WEBHOOK_INCLUDE_AUDIO to true so downstream
+    // consumers (Leo daemon) can transcribe without a second network call.
+    const isAudio = mediaType === 'voice' || mediaType === 'audio';
+    const wantInlineAudio = isAudio && process.env.WEBHOOK_INCLUDE_AUDIO !== 'false';
+    const shouldDownload = (
+      (process.env.AUTO_DOWNLOAD_MEDIA === 'true' || wantInlineAudio) &&
       mediaType &&
       typeof waClient.downloadMedia === 'function'
-    ) {
+    );
+
+    if (shouldDownload) {
       try {
-        const buffer = await waClient.downloadMedia(message);
+        const result = await waClient.downloadMedia(message);
+        const buffer = Buffer.isBuffer(result) ? result : result?.buffer;
+        mediaMime =
+          (result && !Buffer.isBuffer(result) && result.mimetype) ||
+          message?.message?.imageMessage?.mimetype ||
+          message?.message?.videoMessage?.mimetype ||
+          message?.message?.audioMessage?.mimetype ||
+          message?.message?.documentMessage?.mimetype ||
+          message?.message?.stickerMessage?.mimetype ||
+          null;
+
         if (buffer && buffer.length) {
-          const authDir = process.env.AUTH_DIR || process.env.WA_AUTH_DIR || './auth';
-          const mediaDir = path.resolve(authDir, '..', 'media');
-          await mkdir(mediaDir, { recursive: true });
-          const mime =
-            message?.message?.imageMessage?.mimetype ||
-            message?.message?.videoMessage?.mimetype ||
-            message?.message?.audioMessage?.mimetype ||
-            message?.message?.documentMessage?.mimetype ||
-            message?.message?.stickerMessage?.mimetype ||
-            null;
-          const ext = extFromMime(mime);
-          const safeId = String(id || `msg-${Date.now()}`).replace(/[^a-zA-Z0-9._-]/g, '_');
-          const filePath = path.join(mediaDir, `${safeId}.${ext}`);
-          await writeFile(filePath, buffer);
-          mediaPath = filePath;
+          mediaBuffer = buffer;
+
+          // Persist to disk if AUTO_DOWNLOAD_MEDIA is on
+          if (process.env.AUTO_DOWNLOAD_MEDIA === 'true') {
+            const authDir = process.env.AUTH_DIR || process.env.WA_AUTH_DIR || './auth';
+            const mediaDir = path.resolve(authDir, '..', 'media');
+            await mkdir(mediaDir, { recursive: true });
+            const ext = extFromMime(mediaMime);
+            const safeId = String(id || `msg-${Date.now()}`).replace(/[^a-zA-Z0-9._-]/g, '_');
+            const filePath = path.join(mediaDir, `${safeId}.${ext}`);
+            await writeFile(filePath, buffer);
+            mediaPath = filePath;
+          }
         }
       } catch (err) {
         logger.warn(
           { err: err?.message || String(err), id, jid, mediaType },
-          'Failed to auto-download media',
+          'Failed to download media',
         );
       }
     }
@@ -184,6 +205,21 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
           is_owner: normalizeJid(jid) === normalizeJid(ownerJid),
         };
         if (mediaPath) payload.media_path = mediaPath;
+
+        // Inline audio bytes for voice/audio so Leo can transcribe in the
+        // same webhook cycle (no second round-trip). Cap at ~8 MB to avoid
+        // oversize webhook payloads; WhatsApp voice notes are tiny anyway.
+        const MAX_INLINE = 8 * 1024 * 1024;
+        if (wantInlineAudio && mediaBuffer && mediaBuffer.length <= MAX_INLINE) {
+          payload.audio_base64   = mediaBuffer.toString('base64');
+          payload.audio_mimetype = mediaMime || 'audio/ogg';
+          payload.audio_bytes    = mediaBuffer.length;
+        } else if (wantInlineAudio && mediaBuffer && mediaBuffer.length > MAX_INLINE) {
+          logger.warn(
+            { bytes: mediaBuffer.length, id },
+            'Audio too large to inline in webhook (>8MB), skipping audio_base64',
+          );
+        }
 
         // Fire and forget — don't await.
         postWebhook({ webhookUrl, payload, logger, secret: webhookSecret }).catch((err) => {
