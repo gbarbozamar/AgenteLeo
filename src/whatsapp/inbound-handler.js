@@ -39,14 +39,27 @@ function extFromMime(mime) {
   return 'bin';
 }
 
-async function postWebhook({ webhookUrl, payload, logger }) {
+async function postWebhook({ webhookUrl, payload, logger, secret }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
+    const body = JSON.stringify(payload);
+    const headers = { 'content-type': 'application/json' };
+
+    // HMAC-SHA256 signature if secret configured
+    if (secret) {
+      const crypto = await import('node:crypto');
+      const sig = crypto
+        .createHmac('sha256', secret)
+        .update(body)
+        .digest('hex');
+      headers['x-webhook-signature'] = `sha256=${sig}`;
+    }
+
     const res = await fetch(webhookUrl, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
+      headers,
+      body,
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -59,7 +72,7 @@ async function postWebhook({ webhookUrl, payload, logger }) {
   }
 }
 
-export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl, ownerJid }) {
+export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl, webhookSecret, ownerJid }) {
   if (!waClient || typeof waClient.on !== 'function') {
     throw new Error('attachInboundHandler: waClient with .on() required');
   }
@@ -173,7 +186,7 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
         if (mediaPath) payload.media_path = mediaPath;
 
         // Fire and forget — don't await.
-        postWebhook({ webhookUrl, payload, logger }).catch((err) => {
+        postWebhook({ webhookUrl, payload, logger, secret: webhookSecret }).catch((err) => {
           logger.warn(
             { err: err?.message || String(err) },
             'Unexpected webhook dispatch error',

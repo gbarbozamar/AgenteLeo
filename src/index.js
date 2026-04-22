@@ -25,6 +25,7 @@ async function main() {
     DB_PATH = './data/messages.db',
     OWNER_JID,
     INBOUND_WEBHOOK_URL = '',
+    INBOUND_WEBHOOK_SECRET = '',
     RATE_LIMIT_WINDOW_MS = '60000',
     RATE_LIMIT_MAX = '60',
   } = process.env;
@@ -62,6 +63,7 @@ async function main() {
     messageLog,
     logger,
     webhookUrl: INBOUND_WEBHOOK_URL || null,
+    webhookSecret: INBOUND_WEBHOOK_SECRET || null,
     ownerJid: OWNER_JID,
   });
 
