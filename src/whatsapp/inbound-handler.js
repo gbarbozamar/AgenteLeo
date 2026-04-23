@@ -122,6 +122,16 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
       'Inbound WA',
     );
 
+    // Detect our OWN outgoing messages echoing back through messages.upsert.
+    // These cannot be downloaded (Baileys reports "undefined message is not a
+    // media message" on freshly-sent outbound audio) and shouldn't trigger a
+    // webhook — they'd just create a loop where Leo sees its own reply.
+    const isSelfEcho = typeof waClient.isOwnEcho === 'function' && waClient.isOwnEcho(id);
+    if (isSelfEcho) {
+      logger.info({ id, jid, mediaType }, 'Skipping self-echo (own send)');
+      return;
+    }
+
     let mediaPath = null;
     let mediaBuffer = null;
     let mediaMime = null;

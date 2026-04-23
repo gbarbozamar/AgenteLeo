@@ -120,6 +120,7 @@ export class WhatsAppClient extends EventEmitter {
     // Caché ligero de chats y mensajes recientes alimentado por eventos.
     this._chats = new Map();       // jid -> { jid, name, unreadCount, lastMessage }
     this._messages = new Map();    // jid -> [{ id, ts, fromMe, text, mediaType, raw }]
+    this._sentIds = new Map();     // messageId -> expiresAtMs (ids we produced via send*)
   }
 
   isReady() {
@@ -343,10 +344,38 @@ export class WhatsAppClient extends EventEmitter {
 
   // --- API PÚBLICA -----------------------------------------------------
 
+  /**
+   * Remember a just-sent messageId so the messages.upsert event for this
+   * same id is recognized as our own echo (prevents self-download and
+   * self-webhook loops).
+   */
+  _rememberSent(id) {
+    if (!id || !this._sentIds) return;
+    this._sentIds.set(String(id), Date.now() + 3 * 60 * 1000); // 3 min TTL
+    // Periodic cleanup
+    if (this._sentIds.size > 2000) {
+      const now = Date.now();
+      for (const [k, v] of this._sentIds) if (v <= now) this._sentIds.delete(k);
+    }
+  }
+
+  /** True when this id was produced by one of our own send* calls. */
+  isOwnEcho(id) {
+    if (!id || !this._sentIds) return false;
+    const exp = this._sentIds.get(String(id));
+    if (!exp) return false;
+    if (exp <= Date.now()) {
+      this._sentIds.delete(String(id));
+      return false;
+    }
+    return true;
+  }
+
   async sendText(jid, text) {
     this._assertReady();
     const to = normalizeJid(jid);
     const res = await this.sock.sendMessage(to, { text: String(text ?? '') });
+    this._rememberSent(res?.key?.id);
     return { messageId: res?.key?.id };
   }
 
@@ -361,6 +390,7 @@ export class WhatsAppClient extends EventEmitter {
       mimetype: 'audio/ogg; codecs=opus',
       ptt: true,
     });
+    this._rememberSent(res?.key?.id);
     return { messageId: res?.key?.id };
   }
 
@@ -374,6 +404,7 @@ export class WhatsAppClient extends EventEmitter {
       image: imageBuffer,
       caption: String(caption ?? ''),
     });
+    this._rememberSent(res?.key?.id);
     return { messageId: res?.key?.id };
   }
 
@@ -391,6 +422,7 @@ export class WhatsAppClient extends EventEmitter {
       fileName: filename,
       mimetype,
     });
+    this._rememberSent(res?.key?.id);
     return { messageId: res?.key?.id };
   }
 
