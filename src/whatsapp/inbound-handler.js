@@ -137,15 +137,23 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
     let mediaMime = null;
 
     // Download media when:
-    //   - AUTO_DOWNLOAD_MEDIA=true  → save to disk + optionally include in webhook
+    //   - AUTO_DOWNLOAD_MEDIA=true   → save to disk + include in webhook (any kind)
     //   - WEBHOOK_INCLUDE_AUDIO=true → inline base64 for voice/audio in webhook
+    //   - WEBHOOK_INCLUDE_MEDIA=true → inline base64 for image/document in webhook
     //
-    // For voice/audio we default WEBHOOK_INCLUDE_AUDIO to true so downstream
-    // consumers (Leo daemon) can transcribe without a second network call.
+    // Defaults:
+    //   voice/audio        → inline ON   (Leo needs it to transcribe)
+    //   image/document     → inline ON if AUTO_DOWNLOAD_MEDIA=true (Leo cataloga)
+    //   video/sticker/other → off by default (too large)
     const isAudio = mediaType === 'voice' || mediaType === 'audio';
+    const isCatalogable = mediaType === 'image' || mediaType === 'document';
     const wantInlineAudio = isAudio && process.env.WEBHOOK_INCLUDE_AUDIO !== 'false';
+    // Default to true for image/document whenever AUTO_DOWNLOAD_MEDIA is on (opt-out via env)
+    const wantInlineMedia = isCatalogable &&
+      process.env.AUTO_DOWNLOAD_MEDIA === 'true' &&
+      process.env.WEBHOOK_INCLUDE_MEDIA !== 'false';
     const shouldDownload = (
-      (process.env.AUTO_DOWNLOAD_MEDIA === 'true' || wantInlineAudio) &&
+      (process.env.AUTO_DOWNLOAD_MEDIA === 'true' || wantInlineAudio || wantInlineMedia) &&
       mediaType &&
       typeof waClient.downloadMedia === 'function'
     );
@@ -228,6 +236,24 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
           logger.warn(
             { bytes: mediaBuffer.length, id },
             'Audio too large to inline in webhook (>8MB), skipping audio_base64',
+          );
+        }
+
+        // Inline image / document bytes so Leo can catalog + vision-analyze
+        // without a second round-trip. Same 8 MB cap. Filename carried through
+        // so the catalog can preserve it.
+        if (wantInlineMedia && mediaBuffer && mediaBuffer.length <= MAX_INLINE) {
+          payload.media_base64   = mediaBuffer.toString('base64');
+          payload.media_mimetype = mediaMime || 'application/octet-stream';
+          payload.media_bytes    = mediaBuffer.length;
+          const docFilename = message?.message?.documentMessage?.fileName
+                            || message?.message?.documentMessage?.title
+                            || null;
+          if (docFilename) payload.media_filename = docFilename;
+        } else if (wantInlineMedia && mediaBuffer && mediaBuffer.length > MAX_INLINE) {
+          logger.warn(
+            { bytes: mediaBuffer.length, id, mediaType },
+            'Media too large to inline in webhook (>8MB), skipping media_base64',
           );
         }
 
