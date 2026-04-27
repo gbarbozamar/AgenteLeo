@@ -159,12 +159,16 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
     );
 
     if (shouldDownload) {
-      // Baileys media decrypt is flaky on first try (especially post re-pair):
-      // the encrypted bytes can be available before the senderKey rotation
-      // notification has been processed. We retry up to MAX_DOWNLOAD_RETRIES
-      // times with exponential backoff. The retry uses Baileys' built-in
-      // reuploadRequest which asks WhatsApp servers to re-upload the media
-      // with fresh keys.
+      // The event payload from baileys-client.js is { jid, id, ts, fromMe,
+      // text, mediaType, message: <rawBaileysMsg> } where rawBaileysMsg has
+      // the shape { key, messageTimestamp, pushName, broadcast, message: { audioMessage, ... } }.
+      // Baileys' downloadMediaMessage() expects the rawBaileysMsg (one level
+      // deeper than what we receive here). Passing the outer wrapper made
+      // Object.keys(wrapper.message) return ["key", ...] and Baileys threw
+      // `"undefined" message is not a media message`. Fix: pass message.message.
+      const baileysMsg = message.message;
+      const innerBody = baileysMsg?.message || {};
+
       const MAX_DOWNLOAD_RETRIES = 3;
       const RETRY_BASE_MS = 1500;
       let downloadOk = false;
@@ -180,15 +184,15 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
               'Retrying media download',
             );
           }
-          const result = await waClient.downloadMedia(message);
+          const result = await waClient.downloadMedia(baileysMsg);
           const buffer = Buffer.isBuffer(result) ? result : result?.buffer;
           mediaMime =
             (result && !Buffer.isBuffer(result) && result.mimetype) ||
-            message?.message?.imageMessage?.mimetype ||
-            message?.message?.videoMessage?.mimetype ||
-            message?.message?.audioMessage?.mimetype ||
-            message?.message?.documentMessage?.mimetype ||
-            message?.message?.stickerMessage?.mimetype ||
+            innerBody.imageMessage?.mimetype ||
+            innerBody.videoMessage?.mimetype ||
+            innerBody.audioMessage?.mimetype ||
+            innerBody.documentMessage?.mimetype ||
+            innerBody.stickerMessage?.mimetype ||
             null;
 
           if (buffer && buffer.length) {
@@ -222,16 +226,14 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
       }
 
       if (!downloadOk && lastErr) {
-        // Dump the full message envelope so we can diagnose what Baileys
-        // actually delivered. The "undefined message is not a media message"
-        // error comes from Baileys' downloadMsg() finding nothing valid in
-        // msg.message — log every nesting level + key list.
-        const innerMsg = message?.message || {};
-        const innerKeys = Object.keys(innerMsg);
-        const innerStruct = {};
-        for (const k of innerKeys) {
-          const v = innerMsg[k];
-          innerStruct[k] = v && typeof v === 'object'
+        // Diagnostic dump — read the actual Baileys body (innerBody, two
+        // levels deep) so wrapper-detection (audioMessage, ephemeralMessage,
+        // viewOnceMessage, etc.) reflects what Baileys would see.
+        const bodyKeys = Object.keys(innerBody);
+        const bodyStruct = {};
+        for (const k of bodyKeys) {
+          const v = innerBody[k];
+          bodyStruct[k] = v && typeof v === 'object'
             ? `{${Object.keys(v).slice(0,8).join(',')}}`
             : typeof v;
         }
@@ -241,16 +243,15 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
             stack: lastErr?.stack ? String(lastErr.stack).split('\n').slice(0, 4).join(' | ') : null,
             id, jid, mediaType,
             attempts: MAX_DOWNLOAD_RETRIES,
-            // Full dump of message envelope (top-level keys + inner keys)
             envelopeKeys: message ? Object.keys(message) : [],
-            innerKeys,
-            innerStruct,
-            // Detect common wrappers that Baileys' downloadMessageMessage may need to unwrap
-            hasAudio: !!innerMsg.audioMessage,
-            hasEphemeral: !!innerMsg.ephemeralMessage,
-            hasViewOnce: !!innerMsg.viewOnceMessage,
-            hasViewOnceV2: !!innerMsg.viewOnceMessageV2,
-            hasDeviceSent: !!innerMsg.deviceSentMessage,
+            baileysWrapperKeys: baileysMsg ? Object.keys(baileysMsg) : [],
+            bodyKeys,
+            bodyStruct,
+            hasAudio: !!innerBody.audioMessage,
+            hasEphemeral: !!innerBody.ephemeralMessage,
+            hasViewOnce: !!innerBody.viewOnceMessage,
+            hasViewOnceV2: !!innerBody.viewOnceMessageV2,
+            hasDeviceSent: !!innerBody.deviceSentMessage,
           },
           'Failed to download media after retries',
         );
