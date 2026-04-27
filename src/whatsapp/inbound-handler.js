@@ -159,37 +159,79 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
     );
 
     if (shouldDownload) {
-      try {
-        const result = await waClient.downloadMedia(message);
-        const buffer = Buffer.isBuffer(result) ? result : result?.buffer;
-        mediaMime =
-          (result && !Buffer.isBuffer(result) && result.mimetype) ||
-          message?.message?.imageMessage?.mimetype ||
-          message?.message?.videoMessage?.mimetype ||
-          message?.message?.audioMessage?.mimetype ||
-          message?.message?.documentMessage?.mimetype ||
-          message?.message?.stickerMessage?.mimetype ||
-          null;
+      // Baileys media decrypt is flaky on first try (especially post re-pair):
+      // the encrypted bytes can be available before the senderKey rotation
+      // notification has been processed. We retry up to MAX_DOWNLOAD_RETRIES
+      // times with exponential backoff. The retry uses Baileys' built-in
+      // reuploadRequest which asks WhatsApp servers to re-upload the media
+      // with fresh keys.
+      const MAX_DOWNLOAD_RETRIES = 3;
+      const RETRY_BASE_MS = 1500;
+      let downloadOk = false;
+      let lastErr = null;
 
-        if (buffer && buffer.length) {
-          mediaBuffer = buffer;
-
-          // Persist to disk if AUTO_DOWNLOAD_MEDIA is on
-          if (process.env.AUTO_DOWNLOAD_MEDIA === 'true') {
-            const authDir = process.env.AUTH_DIR || process.env.WA_AUTH_DIR || './auth';
-            const mediaDir = path.resolve(authDir, '..', 'media');
-            await mkdir(mediaDir, { recursive: true });
-            const ext = extFromMime(mediaMime);
-            const safeId = String(id || `msg-${Date.now()}`).replace(/[^a-zA-Z0-9._-]/g, '_');
-            const filePath = path.join(mediaDir, `${safeId}.${ext}`);
-            await writeFile(filePath, buffer);
-            mediaPath = filePath;
+      for (let attempt = 0; attempt < MAX_DOWNLOAD_RETRIES && !downloadOk; attempt++) {
+        try {
+          if (attempt > 0) {
+            const delay = RETRY_BASE_MS * Math.pow(2, attempt - 1);
+            await new Promise((r) => setTimeout(r, delay));
+            logger.info(
+              { id, jid, mediaType, attempt: attempt + 1, delay },
+              'Retrying media download',
+            );
           }
+          const result = await waClient.downloadMedia(message);
+          const buffer = Buffer.isBuffer(result) ? result : result?.buffer;
+          mediaMime =
+            (result && !Buffer.isBuffer(result) && result.mimetype) ||
+            message?.message?.imageMessage?.mimetype ||
+            message?.message?.videoMessage?.mimetype ||
+            message?.message?.audioMessage?.mimetype ||
+            message?.message?.documentMessage?.mimetype ||
+            message?.message?.stickerMessage?.mimetype ||
+            null;
+
+          if (buffer && buffer.length) {
+            mediaBuffer = buffer;
+            downloadOk = true;
+            if (attempt > 0) {
+              logger.info(
+                { id, jid, mediaType, attempt: attempt + 1, bytes: buffer.length },
+                'Media download succeeded on retry',
+              );
+            }
+
+            // Persist to disk if AUTO_DOWNLOAD_MEDIA is on
+            if (process.env.AUTO_DOWNLOAD_MEDIA === 'true') {
+              const authDir = process.env.AUTH_DIR || process.env.WA_AUTH_DIR || './auth';
+              const mediaDir = path.resolve(authDir, '..', 'media');
+              await mkdir(mediaDir, { recursive: true });
+              const ext = extFromMime(mediaMime);
+              const safeId = String(id || `msg-${Date.now()}`).replace(/[^a-zA-Z0-9._-]/g, '_');
+              const filePath = path.join(mediaDir, `${safeId}.${ext}`);
+              await writeFile(filePath, buffer);
+              mediaPath = filePath;
+            }
+          } else {
+            // Empty buffer — treat as failure to trigger retry
+            lastErr = new Error('downloadMedia returned empty buffer');
+          }
+        } catch (err) {
+          lastErr = err;
         }
-      } catch (err) {
+      }
+
+      if (!downloadOk && lastErr) {
+        // Log full stack on final failure for diagnostics
         logger.warn(
-          { err: err?.message || String(err), id, jid, mediaType },
-          'Failed to download media',
+          {
+            err: lastErr?.message || String(lastErr),
+            stack: lastErr?.stack ? String(lastErr.stack).split('\n').slice(0, 5).join(' | ') : null,
+            id, jid, mediaType,
+            attempts: MAX_DOWNLOAD_RETRIES,
+            messageType: message?.message ? Object.keys(message.message)[0] : 'unknown',
+          },
+          'Failed to download media after retries',
         );
       }
     }
