@@ -222,14 +222,35 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
       }
 
       if (!downloadOk && lastErr) {
-        // Log full stack on final failure for diagnostics
+        // Dump the full message envelope so we can diagnose what Baileys
+        // actually delivered. The "undefined message is not a media message"
+        // error comes from Baileys' downloadMsg() finding nothing valid in
+        // msg.message — log every nesting level + key list.
+        const innerMsg = message?.message || {};
+        const innerKeys = Object.keys(innerMsg);
+        const innerStruct = {};
+        for (const k of innerKeys) {
+          const v = innerMsg[k];
+          innerStruct[k] = v && typeof v === 'object'
+            ? `{${Object.keys(v).slice(0,8).join(',')}}`
+            : typeof v;
+        }
         logger.warn(
           {
             err: lastErr?.message || String(lastErr),
-            stack: lastErr?.stack ? String(lastErr.stack).split('\n').slice(0, 5).join(' | ') : null,
+            stack: lastErr?.stack ? String(lastErr.stack).split('\n').slice(0, 4).join(' | ') : null,
             id, jid, mediaType,
             attempts: MAX_DOWNLOAD_RETRIES,
-            messageType: message?.message ? Object.keys(message.message)[0] : 'unknown',
+            // Full dump of message envelope (top-level keys + inner keys)
+            envelopeKeys: message ? Object.keys(message) : [],
+            innerKeys,
+            innerStruct,
+            // Detect common wrappers that Baileys' downloadMessageMessage may need to unwrap
+            hasAudio: !!innerMsg.audioMessage,
+            hasEphemeral: !!innerMsg.ephemeralMessage,
+            hasViewOnce: !!innerMsg.viewOnceMessage,
+            hasViewOnceV2: !!innerMsg.viewOnceMessageV2,
+            hasDeviceSent: !!innerMsg.deviceSentMessage,
           },
           'Failed to download media after retries',
         );
