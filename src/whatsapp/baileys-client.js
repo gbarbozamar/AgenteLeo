@@ -512,6 +512,10 @@ export class WhatsAppClient extends EventEmitter {
       throw new Error('downloadMedia: mensaje Baileys inválido');
     }
 
+    if (!this.sock.updateMediaMessage) {
+      this.logger.warn({ id: message?.key?.id }, 'downloadMedia: sock.updateMediaMessage is not available — reupload will fail');
+    }
+
     const buffer = await downloadMediaMessage(
       message,
       'buffer',

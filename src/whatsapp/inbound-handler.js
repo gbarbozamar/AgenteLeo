@@ -240,6 +240,9 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
           }
         } catch (err) {
           lastErr = err;
+          if (attempt === 0) {
+            logger.warn({ err: lastErr?.message, stack: lastErr?.stack?.split('\n').slice(0,3).join(' | '), id, jid, mediaType }, 'Media download attempt 0 failed');
+          }
         }
       }
 
