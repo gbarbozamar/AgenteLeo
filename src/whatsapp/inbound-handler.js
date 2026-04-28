@@ -158,6 +158,24 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
       typeof waClient.downloadMedia === 'function'
     );
 
+    // DIAG: log decision for media messages so we can trace download failures
+    if (mediaType) {
+      logger.info(
+        {
+          id, jid, mediaType,
+          shouldDownload,
+          isAudio,
+          wantInlineAudio,
+          AUTO_DOWNLOAD_MEDIA: process.env.AUTO_DOWNLOAD_MEDIA,
+          WEBHOOK_INCLUDE_AUDIO: process.env.WEBHOOK_INCLUDE_AUDIO,
+          hasDownloadFn: typeof waClient.downloadMedia === 'function',
+          hasBaileysMsg: !!message?.message,
+          baileysInnerKeys: message?.message?.message ? Object.keys(message.message.message).slice(0, 5) : [],
+        },
+        'Media decision',
+      );
+    }
+
     if (shouldDownload) {
       // The event payload from baileys-client.js is { jid, id, ts, fromMe,
       // text, mediaType, message: <rawBaileysMsg> } where rawBaileysMsg has
