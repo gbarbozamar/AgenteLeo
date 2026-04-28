@@ -516,15 +516,53 @@ export class WhatsAppClient extends EventEmitter {
       this.logger.warn({ id: message?.key?.id }, 'downloadMedia: sock.updateMediaMessage is not available — reupload will fail');
     }
 
-    const rawResult = await downloadMediaMessage(
-      message,
-      'buffer',
-      {},
+    // Log the media URL fields so we can tell if the CDN URL is present/expired
+    const innerMsg = message.message || {};
+    const mediaContent = innerMsg.audioMessage || innerMsg.imageMessage || innerMsg.videoMessage ||
+                         innerMsg.documentMessage || innerMsg.stickerMessage || null;
+    this.logger.info(
       {
-        logger: this.logger,
-        reuploadRequest: this.sock.updateMediaMessage,
+        id: message?.key?.id,
+        hasUrl: !!mediaContent?.url,
+        urlPrefix: mediaContent?.url?.slice(0, 40) || null,
+        hasDirectPath: !!mediaContent?.directPath,
+        hasMediaKey: !!mediaContent?.mediaKey,
+        mediaType: Object.keys(innerMsg).find(k => k.endsWith('Message')) || null,
       },
+      'downloadMedia: media fields',
     );
+
+    // Baileys' updateMediaMessage (the reupload path) uses waitForMsgMediaUpdate with
+    // NO timeout — if WhatsApp never responds to the retry request, the entire
+    // downloadMediaMessage call hangs forever and the handler never reaches the webhook.
+    // Wrap with a 15-second hard timeout so we always complete one way or another.
+    const DOWNLOAD_TIMEOUT_MS = 15_000;
+    let timeoutHandle;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error(`downloadMedia timed out after ${DOWNLOAD_TIMEOUT_MS}ms — CDN URL may be expired or unreachable`)),
+        DOWNLOAD_TIMEOUT_MS,
+      );
+    });
+
+    let rawResult;
+    try {
+      rawResult = await Promise.race([
+        downloadMediaMessage(
+          message,
+          'buffer',
+          {},
+          {
+            logger: this.logger,
+            reuploadRequest: this.sock.updateMediaMessage,
+          },
+        ),
+        timeoutPromise,
+      ]);
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+
     const resultBytes = Buffer.isBuffer(rawResult) ? rawResult.length : (rawResult?.length ?? -1);
     this.logger.info({ id: message?.key?.id, resultType: typeof rawResult, isBuffer: Buffer.isBuffer(rawResult), resultBytes }, 'downloadMediaMessage raw result');
 
