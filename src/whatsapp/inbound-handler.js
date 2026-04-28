@@ -135,6 +135,8 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
     let mediaPath = null;
     let mediaBuffer = null;
     let mediaMime = null;
+    let downloadOk = false;
+    let lastErr = null;
 
     // Download media when:
     //   - AUTO_DOWNLOAD_MEDIA=true   → save to disk + include in webhook (any kind)
@@ -189,8 +191,6 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
 
       const MAX_DOWNLOAD_RETRIES = 3;
       const RETRY_BASE_MS = 1500;
-      let downloadOk = false;
-      let lastErr = null;
 
       for (let attempt = 0; attempt < MAX_DOWNLOAD_RETRIES && !downloadOk; attempt++) {
         try {
