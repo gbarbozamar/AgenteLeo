@@ -279,6 +279,12 @@ export function attachInboundHandler({ waClient, messageLog, logger, webhookUrl,
       }
     }
 
+    // DIAG: always log the outcome before webhook
+    logger.info(
+      { id, jid, mediaType, downloadOk, mediaBufferBytes: mediaBuffer?.length ?? 0, lastErr: lastErr?.message ?? null },
+      'Pre-webhook media state',
+    );
+
     if (webhookUrl) {
       const now = Date.now();
       while (webhookTimestamps.length && now - webhookTimestamps[0] > RATE_WINDOW_MS) {

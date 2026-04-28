@@ -516,7 +516,7 @@ export class WhatsAppClient extends EventEmitter {
       this.logger.warn({ id: message?.key?.id }, 'downloadMedia: sock.updateMediaMessage is not available — reupload will fail');
     }
 
-    const buffer = await downloadMediaMessage(
+    const rawResult = await downloadMediaMessage(
       message,
       'buffer',
       {},
@@ -525,11 +525,10 @@ export class WhatsAppClient extends EventEmitter {
         reuploadRequest: this.sock.updateMediaMessage,
       },
     );
+    const resultBytes = Buffer.isBuffer(rawResult) ? rawResult.length : (rawResult?.length ?? -1);
+    this.logger.info({ id: message?.key?.id, resultType: typeof rawResult, isBuffer: Buffer.isBuffer(rawResult), resultBytes }, 'downloadMediaMessage raw result');
 
-    return {
-      buffer,
-      mimetype: detectMimetype(message),
-    };
+    return { buffer: rawResult, mimetype: detectMimetype(message) };
   }
 }
 
